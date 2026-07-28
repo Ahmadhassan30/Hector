@@ -10,10 +10,14 @@ boundary.
 H00-P → H01-E → H02-E ─pass→ H03-E → H04-E
                     └fail→ H02-R → H02-E
 
-H04 → system spine + native audio
-spine/audio join → H30 → H31 → {H32,H33,H34} → H35 → H36 Gate 0
-                                                   ↑       │
-                                                   └ H35-R─┘
+H04 → H10 → {H11,H13,H14}
+H11 → H12
+H13 → {H15,H16}
+H14 → H20 → {H21,H22} → H23 → H24
+{H12,H13,H14,H15,H16,H24} → H30
+H30 → H31 → {H32,H33,H34} → H35 → H36 Gate 0
+                                      ↑       │
+                                      └ H35-R─┘
 
 H36 GO → H37 benchmark foundation → real component branches
 real components → memory + books → knowledge → features/integration
@@ -109,7 +113,9 @@ H50 integration → H51 mandatory benchmark → H53 personal acceptance
 - Manual validation: cycle and premature-abstraction review.
 - Pass criteria: repository layout and dependency invariants hold.
 - Failure edges: repair H03.
-- Successors: H10-E, H13-E, H14-E, H16-E in parallel.
+- Successors: H10-E. After H10-E passes, H11-E, H13-E, and H14-E become
+  eligible under their own contracts. H16-E becomes eligible only after H13-E
+  passes.
 
 ## System spine
 
@@ -126,7 +132,7 @@ H50 integration → H51 mandatory benchmark → H53 personal acceptance
 - Manual validation: misuse review.
 - Pass criteria: only `GenerationEpoch` can fence assistant output.
 - Failure edges: revise H10.
-- Successors: H11-E and H13-E.
+- Successors: H11-E, H13-E, and H14-E.
 
 ### H11-E — Domain State, Events, and Effects
 
@@ -659,8 +665,9 @@ H50 integration → H51 mandatory benchmark → H53 personal acceptance
 
 ## Graph classifications
 
-- Parallel branches: H10/H13/H14/H16; H21/H22; H32/H33/H34; eligible
-  H40/H42/H43/H44/H45/H46; memory/books when entries pass.
+- Parallel branches: H11/H13/H14 after H10; H15/H16 after H13; H21/H22;
+  H32/H33/H34; eligible H40/H42/H43/H44/H45/H46; memory/books when entries
+  pass.
 - Mandatory joins: H04, H30, H35, H36, H50, H51, H53.
 - Decision nodes: H02, H36, H41, H42, H44, H46 policy, H51, H53.
 - Rollback nodes: H02-R, H35-R, H4R-E.
