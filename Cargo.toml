@@ -1,0 +1,12 @@
+[workspace]
+resolver = "3"
+members = [
+    "apps/hector",
+    "crates/hector-core",
+    "crates/hector-protocol",
+    "crates/hector-audio",
+    "crates/hector-runtime",
+    "crates/hector-platform-windows",
+    "crates/hector-storage",
+    "crates/hector-tui",
+]
