@@ -1,4 +1,4 @@
-use crate::{AudioEpoch, RequestId, WorkerKind};
+use crate::{AudioEpoch, GenerationEpoch, RequestId, WorkerKind};
 
 /// Control-plane work requested by the pure domain reducer.
 ///
@@ -11,7 +11,10 @@ pub enum Effect {
     ///
     /// Completion returns
     /// [`crate::DomainEvent::RequestCancellationCompleted`].
-    CancelRequest { request_id: RequestId },
+    CancelRequest {
+        generation_epoch: GenerationEpoch,
+        request_id: RequestId,
+    },
     /// Stop a worker.
     ///
     /// Completion returns [`crate::DomainEvent::WorkerStopped`].
@@ -29,7 +32,7 @@ pub enum Effect {
 #[cfg(test)]
 mod tests {
     use super::Effect;
-    use crate::{AudioEpoch, DomainEvent, RequestId, WorkerKind};
+    use crate::{AudioEpoch, DomainEvent, GenerationEpoch, RequestId, WorkerKind};
 
     fn request_id(raw: u128) -> RequestId {
         RequestId::from_raw(raw).expect("test request identifiers are nonzero")
@@ -39,12 +42,25 @@ mod tests {
         AudioEpoch::from_raw(raw).expect("test audio epochs are nonzero")
     }
 
+    fn generation_epoch(raw: u64) -> GenerationEpoch {
+        GenerationEpoch::from_raw(raw).expect("test generation epochs are nonzero")
+    }
+
     fn assert_correspondence(effect: &Effect, outcome: &DomainEvent) {
         match (effect, outcome) {
             (
-                Effect::CancelRequest { request_id: effect },
-                DomainEvent::RequestCancellationCompleted { request_id: event },
-            ) => assert_eq!(effect, event),
+                Effect::CancelRequest {
+                    generation_epoch: effect_generation,
+                    request_id: effect_request,
+                },
+                DomainEvent::RequestCancellationCompleted {
+                    generation_epoch: event_generation,
+                    request_id: event_request,
+                },
+            ) => {
+                assert_eq!(effect_generation, event_generation);
+                assert_eq!(effect_request, event_request);
+            }
             (
                 Effect::StopWorker { worker: effect },
                 DomainEvent::WorkerStopped { worker: event },
@@ -66,6 +82,7 @@ mod tests {
         let audio = audio_epoch(2);
 
         let cancellation = Effect::CancelRequest {
+            generation_epoch: generation_epoch(3),
             request_id: request,
         };
         let stop_worker = Effect::StopWorker {
@@ -79,6 +96,7 @@ mod tests {
         assert_correspondence(
             &cancellation,
             &DomainEvent::RequestCancellationCompleted {
+                generation_epoch: generation_epoch(3),
                 request_id: request,
             },
         );
@@ -109,10 +127,11 @@ mod tests {
             format!(
                 "{:?}",
                 Effect::CancelRequest {
+                    generation_epoch: generation_epoch(6),
                     request_id: request_id(7)
                 }
             ),
-            "CancelRequest { request_id: RequestId(7) }"
+            "CancelRequest { generation_epoch: GenerationEpoch(6), request_id: RequestId(7) }"
         );
         assert_eq!(
             format!("{:?}", Effect::CompleteShutdown),

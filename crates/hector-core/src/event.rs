@@ -53,7 +53,10 @@ pub enum DomainEvent {
         fault: WorkerFault,
     },
     /// Cancellation of a request completed.
-    RequestCancellationCompleted { request_id: RequestId },
+    RequestCancellationCompleted {
+        generation_epoch: GenerationEpoch,
+        request_id: RequestId,
+    },
     /// A worker stopped.
     WorkerStopped { worker: WorkerKind },
     /// Audio stopped at the observed epoch, if one existed.
@@ -244,9 +247,14 @@ mod tests {
         );
 
         match (DomainEvent::RequestCancellationCompleted {
+            generation_epoch: generation_epoch(4),
             request_id: request,
         }) {
-            DomainEvent::RequestCancellationCompleted { request_id } => {
+            DomainEvent::RequestCancellationCompleted {
+                generation_epoch: event_generation_epoch,
+                request_id,
+            } => {
+                assert_eq!(event_generation_epoch, generation_epoch(4));
                 assert_eq!(request_id, request);
             }
             _ => unreachable!("the test constructs a cancellation outcome"),

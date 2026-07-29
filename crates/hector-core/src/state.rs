@@ -1,4 +1,4 @@
-use crate::{AudioEpoch, GenerationEpoch, RequestId, SessionId, TurnId};
+use crate::{AudioEpoch, GenerationEpoch, RequestId, SessionId, TurnId, WorkerKind};
 
 /// Top-level lifecycle of the Hector application.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -22,18 +22,20 @@ pub enum ApplicationLifecycle {
 /// let _ = ApplicationState {
 ///     lifecycle: ApplicationLifecycle::Running,
 ///     session: None,
+///     shutdown: None,
 /// };
 /// ```
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ApplicationState {
     lifecycle: ApplicationLifecycle,
     session: Option<SessionState>,
+    shutdown: Option<ShutdownState>,
 }
 
 impl ApplicationState {
     /// Constructs the deterministic initial state.
     pub fn initial() -> Self {
-        Self::from_parts(ApplicationLifecycle::Running, None)
+        Self::from_parts(ApplicationLifecycle::Running, None, None)
             .expect("the initial application state is valid")
     }
 
@@ -50,12 +52,33 @@ impl ApplicationState {
     pub(crate) fn from_parts(
         lifecycle: ApplicationLifecycle,
         session: Option<SessionState>,
+        shutdown: Option<ShutdownState>,
     ) -> Option<Self> {
-        if lifecycle == ApplicationLifecycle::Stopped && session.is_some() {
-            return None;
-        }
+        let valid = match lifecycle {
+            ApplicationLifecycle::Running => shutdown.is_none(),
+            ApplicationLifecycle::ShuttingDown => shutdown.is_some(),
+            ApplicationLifecycle::Stopped => session.is_none() && shutdown.is_none(),
+        };
 
-        Some(Self { lifecycle, session })
+        if valid {
+            Some(Self {
+                lifecycle,
+                session,
+                shutdown,
+            })
+        } else {
+            None
+        }
+    }
+
+    pub(crate) fn into_parts(
+        self,
+    ) -> (
+        ApplicationLifecycle,
+        Option<SessionState>,
+        Option<ShutdownState>,
+    ) {
+        (self.lifecycle, self.session, self.shutdown)
     }
 }
 
@@ -68,10 +91,6 @@ pub struct SessionState {
 }
 
 impl SessionState {
-    #[allow(
-        dead_code,
-        reason = "crate-private constructor is reserved for H12 reducer state construction"
-    )]
     pub(crate) fn new(
         session_id: SessionId,
         active_turn: Option<TurnState>,
@@ -82,6 +101,10 @@ impl SessionState {
             active_turn,
             audio_epoch,
         }
+    }
+
+    pub(crate) fn into_parts(self) -> (SessionId, Option<TurnState>, Option<AudioEpoch>) {
+        (self.session_id, self.active_turn, self.audio_epoch)
     }
 
     /// Returns the identity of this session.
@@ -118,15 +141,15 @@ pub struct TurnState {
 }
 
 impl TurnState {
-    #[allow(
-        dead_code,
-        reason = "crate-private constructor is reserved for H12 reducer state construction"
-    )]
     pub(crate) fn new(turn_id: TurnId, active_generation: Option<GenerationState>) -> Self {
         Self {
             turn_id,
             active_generation,
         }
+    }
+
+    pub(crate) fn into_parts(self) -> (TurnId, Option<GenerationState>) {
+        (self.turn_id, self.active_generation)
     }
 
     /// Returns this session-local turn's identity.
@@ -160,10 +183,6 @@ pub struct GenerationState {
 }
 
 impl GenerationState {
-    #[allow(
-        dead_code,
-        reason = "crate-private constructor is reserved for H12 reducer state construction"
-    )]
     pub(crate) fn new(generation_epoch: GenerationEpoch, request_id: RequestId) -> Self {
         Self {
             generation_epoch,
@@ -182,9 +201,135 @@ impl GenerationState {
     }
 }
 
+/// Internal graceful-shutdown bookkeeping shared by state construction and the reducer.
+///
+/// This type is crate-private, has private fields, is not publicly re-exported,
+/// and is used only as the internal boundary between `state.rs` and
+/// `reducer.rs`.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct ShutdownState {
+    pending_cancellation: Option<PendingCancellation>,
+    pending_audio_stop: Option<PendingAudioStop>,
+    pending_worker_stops: PendingWorkerStops,
+    complete_shutdown_emitted: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct PendingCancellation {
+    generation_epoch: GenerationEpoch,
+    request_id: RequestId,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct PendingAudioStop {
+    expected_audio_epoch: Option<AudioEpoch>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct PendingWorkerStops {
+    asr: bool,
+    llm: bool,
+    tts: bool,
+    audio: bool,
+}
+
+impl ShutdownState {
+    pub(crate) fn new(
+        pending_cancellation: Option<(GenerationEpoch, RequestId)>,
+        expected_audio_epoch: Option<AudioEpoch>,
+    ) -> Self {
+        Self {
+            pending_cancellation: pending_cancellation.map(|(generation_epoch, request_id)| {
+                PendingCancellation {
+                    generation_epoch,
+                    request_id,
+                }
+            }),
+            pending_audio_stop: Some(PendingAudioStop {
+                expected_audio_epoch,
+            }),
+            pending_worker_stops: PendingWorkerStops {
+                asr: true,
+                llm: true,
+                tts: true,
+                audio: true,
+            },
+            complete_shutdown_emitted: false,
+        }
+    }
+
+    pub(crate) fn acknowledge_cancellation(
+        &mut self,
+        generation_epoch: GenerationEpoch,
+        request_id: RequestId,
+    ) -> bool {
+        let matches = self.pending_cancellation.as_ref().is_some_and(|pending| {
+            pending.generation_epoch == generation_epoch && pending.request_id == request_id
+        });
+
+        if matches {
+            self.pending_cancellation = None;
+        }
+
+        matches
+    }
+
+    pub(crate) fn acknowledge_audio_stop(&mut self, audio_epoch: Option<AudioEpoch>) -> bool {
+        let matches = self
+            .pending_audio_stop
+            .as_ref()
+            .is_some_and(|pending| pending.expected_audio_epoch == audio_epoch);
+
+        if matches {
+            self.pending_audio_stop = None;
+        }
+
+        matches
+    }
+
+    pub(crate) fn acknowledge_worker_stop(&mut self, worker: WorkerKind) -> bool {
+        let pending = match worker {
+            WorkerKind::Asr => &mut self.pending_worker_stops.asr,
+            WorkerKind::Llm => &mut self.pending_worker_stops.llm,
+            WorkerKind::Tts => &mut self.pending_worker_stops.tts,
+            WorkerKind::Audio => &mut self.pending_worker_stops.audio,
+        };
+
+        let was_pending = *pending;
+        *pending = false;
+        was_pending
+    }
+
+    pub(crate) fn acknowledgements_complete(&self) -> bool {
+        self.pending_cancellation.is_none()
+            && self.pending_audio_stop.is_none()
+            && !self.pending_worker_stops.asr
+            && !self.pending_worker_stops.llm
+            && !self.pending_worker_stops.tts
+            && !self.pending_worker_stops.audio
+    }
+
+    pub(crate) fn complete_shutdown_emitted(&self) -> bool {
+        self.complete_shutdown_emitted
+    }
+
+    pub(crate) fn mark_complete_shutdown_emitted(&mut self) -> bool {
+        if !self.acknowledgements_complete() || self.complete_shutdown_emitted {
+            return false;
+        }
+
+        self.complete_shutdown_emitted = true;
+        true
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{ApplicationLifecycle, ApplicationState, GenerationState, SessionState, TurnState};
+    use super::{
+        ApplicationLifecycle, ApplicationState, GenerationState, SessionState, ShutdownState,
+        TurnState,
+    };
+    use crate::WorkerKind;
     use crate::{AudioEpoch, GenerationEpoch, RequestId, SessionId, TurnId};
 
     fn session_id(raw: u128) -> SessionId {
@@ -223,15 +368,18 @@ mod tests {
         assert_eq!(first.session(), None);
         assert_eq!(
             format!("{first:?}"),
-            "ApplicationState { lifecycle: Running, session: None }"
+            "ApplicationState { lifecycle: Running, session: None, shutdown: None }"
         );
     }
 
     #[test]
     fn valid_nested_state_preserves_every_identifier() {
-        let state =
-            ApplicationState::from_parts(ApplicationLifecycle::Running, Some(nested_session()))
-                .expect("running may contain a session");
+        let state = ApplicationState::from_parts(
+            ApplicationLifecycle::Running,
+            Some(nested_session()),
+            None,
+        )
+        .expect("running may contain a session");
 
         let session = state.session().expect("the session is present");
         let turn = session.active_turn().expect("the turn is present");
@@ -247,8 +395,9 @@ mod tests {
     #[test]
     fn session_may_have_neither_turn_nor_audio_epoch() {
         let session = SessionState::new(session_id(1), None, None);
-        let state = ApplicationState::from_parts(ApplicationLifecycle::Running, Some(session))
-            .expect("running may contain an inactive session");
+        let state =
+            ApplicationState::from_parts(ApplicationLifecycle::Running, Some(session), None)
+                .expect("running may contain an inactive session");
 
         let session = state.session().expect("the session is present");
         assert_eq!(session.active_turn(), None);
@@ -260,6 +409,7 @@ mod tests {
         let state = ApplicationState::from_parts(
             ApplicationLifecycle::ShuttingDown,
             Some(nested_session()),
+            Some(ShutdownState::new(None, None)),
         )
         .expect("graceful shutdown may retain a session");
 
@@ -269,7 +419,7 @@ mod tests {
 
     #[test]
     fn stopped_state_contains_no_session() {
-        let stopped = ApplicationState::from_parts(ApplicationLifecycle::Stopped, None)
+        let stopped = ApplicationState::from_parts(ApplicationLifecycle::Stopped, None, None)
             .expect("stopped without a session is valid");
 
         assert_eq!(stopped.lifecycle(), ApplicationLifecycle::Stopped);
@@ -278,9 +428,86 @@ mod tests {
 
     #[test]
     fn stopped_state_with_a_session_is_rejected() {
-        let invalid =
-            ApplicationState::from_parts(ApplicationLifecycle::Stopped, Some(nested_session()));
+        let invalid = ApplicationState::from_parts(
+            ApplicationLifecycle::Stopped,
+            Some(nested_session()),
+            None,
+        );
 
         assert_eq!(invalid, None);
+    }
+
+    #[test]
+    fn lifecycle_and_shutdown_bookkeeping_combinations_are_enforced() {
+        let shutdown = ShutdownState::new(None, None);
+
+        assert_eq!(
+            ApplicationState::from_parts(
+                ApplicationLifecycle::Running,
+                None,
+                Some(shutdown.clone())
+            ),
+            None
+        );
+        assert_eq!(
+            ApplicationState::from_parts(ApplicationLifecycle::ShuttingDown, None, None),
+            None
+        );
+        assert_eq!(
+            ApplicationState::from_parts(ApplicationLifecycle::Stopped, None, Some(shutdown)),
+            None
+        );
+    }
+
+    #[test]
+    fn shutdown_acknowledgements_require_exact_outstanding_targets() {
+        let generation = generation_epoch(3);
+        let request = request_id(4);
+        let audio = audio_epoch(5);
+        let mut shutdown = ShutdownState::new(Some((generation, request)), Some(audio));
+
+        assert!(!shutdown.acknowledge_cancellation(generation_epoch(2), request));
+        assert!(!shutdown.acknowledge_cancellation(generation, request_id(6)));
+        assert!(shutdown.acknowledge_cancellation(generation, request));
+        assert!(!shutdown.acknowledge_cancellation(generation, request));
+
+        assert!(!shutdown.acknowledge_audio_stop(None));
+        assert!(!shutdown.acknowledge_audio_stop(Some(audio_epoch(4))));
+        assert!(shutdown.acknowledge_audio_stop(Some(audio)));
+        assert!(!shutdown.acknowledge_audio_stop(Some(audio)));
+    }
+
+    #[test]
+    fn absent_audio_epoch_is_still_a_pending_exact_target() {
+        let mut shutdown = ShutdownState::new(None, None);
+
+        assert!(!shutdown.acknowledge_audio_stop(Some(audio_epoch(1))));
+        assert!(shutdown.acknowledge_audio_stop(None));
+        assert!(!shutdown.acknowledge_audio_stop(None));
+    }
+
+    #[test]
+    fn worker_acknowledgements_clear_once_and_completion_marks_once() {
+        let mut shutdown = ShutdownState::new(None, None);
+
+        assert!(shutdown.acknowledge_audio_stop(None));
+        assert!(!shutdown.acknowledgements_complete());
+        assert!(!shutdown.mark_complete_shutdown_emitted());
+
+        for worker in [
+            WorkerKind::Asr,
+            WorkerKind::Llm,
+            WorkerKind::Tts,
+            WorkerKind::Audio,
+        ] {
+            assert!(shutdown.acknowledge_worker_stop(worker));
+            assert!(!shutdown.acknowledge_worker_stop(worker));
+        }
+
+        assert!(shutdown.acknowledgements_complete());
+        assert!(!shutdown.complete_shutdown_emitted());
+        assert!(shutdown.mark_complete_shutdown_emitted());
+        assert!(shutdown.complete_shutdown_emitted());
+        assert!(!shutdown.mark_complete_shutdown_emitted());
     }
 }
