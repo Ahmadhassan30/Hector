@@ -70,6 +70,14 @@ function Get-HectorExpectedDependencies {
             Features    = @()
         }
     )
+    $dependencies['hector-audio'] = @(
+        [pscustomobject]@{
+            Name        = 'hector-core'
+            Kind        = 'normal'
+            IsWorkspace = $true
+            Features    = @()
+        }
+    )
 
     return $dependencies
 }

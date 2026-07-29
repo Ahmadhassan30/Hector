@@ -76,14 +76,16 @@ function New-HectorTestModel {
         Packages      = @($packages)
     }
 
-    foreach ($dependency in (Get-HectorExpectedDependencies)['hector-protocol']) {
-        Add-HectorTestDependency `
-            -Model $model `
-            -Consumer 'hector-protocol' `
-            -Dependency $dependency.Name `
-            -IsWorkspace $dependency.IsWorkspace `
-            -Kind $dependency.Kind `
-            -Features $dependency.Features
+    foreach ($consumer in @('hector-protocol', 'hector-audio')) {
+        foreach ($dependency in (Get-HectorExpectedDependencies)[$consumer]) {
+            Add-HectorTestDependency `
+                -Model $model `
+                -Consumer $consumer `
+                -Dependency $dependency.Name `
+                -IsWorkspace $dependency.IsWorkspace `
+                -Kind $dependency.Kind `
+                -Features $dependency.Features
+        }
     }
 
     return $model
@@ -134,7 +136,7 @@ function Add-HectorTestDependency {
     )
 }
 
-Invoke-HectorTestCase 'exact H13 dependency topology passes' {
+Invoke-HectorTestCase 'exact H13 and H14 dependency topology passes' {
     $violations = @(Test-HectorArchitectureModel -Model (New-HectorTestModel))
     Assert-HectorNoViolations -Violations $violations
 }
@@ -145,7 +147,8 @@ $forbiddenInternalEdges = @(
     @('hector-runtime', 'hector-audio'),
     @('hector', 'hector-runtime'),
     @('hector', 'hector-tui'),
-    @('hector-audio', 'hector-core')
+    @('hector-audio', 'hector-protocol'),
+    @('hector-core', 'hector-audio')
 )
 foreach ($edge in $forbiddenInternalEdges) {
     $consumer = $edge[0]
@@ -171,6 +174,56 @@ Invoke-HectorTestCase 'external dependency is rejected' {
         -IsWorkspace $false
     $violations = @(Test-HectorArchitectureModel -Model $model)
     Assert-HectorViolation -Violations $violations -Pattern 'Architecture forbids external dependency'
+}
+
+foreach ($dependencyName in @(
+    'tokio',
+    'cpal',
+    'serde',
+    'base64',
+    'tracing',
+    'windows',
+    'symphonia',
+    'rubato'
+)) {
+    Invoke-HectorTestCase "audio external dependency $dependencyName is rejected" {
+        $model = New-HectorTestModel
+        Add-HectorTestDependency `
+            -Model $model `
+            -Consumer 'hector-audio' `
+            -Dependency $dependencyName `
+            -IsWorkspace $false
+        $violations = @(Test-HectorArchitectureModel -Model $model)
+        Assert-HectorViolation -Violations $violations -Pattern 'Architecture forbids external dependency'
+    }
+}
+
+Invoke-HectorTestCase 'missing required audio core dependency is rejected' {
+    $model = New-HectorTestModel
+    $audio = Get-HectorTestPackage -Model $model -Name 'hector-audio'
+    $audio.DependencyDeclarations = @()
+    $violations = @(Test-HectorArchitectureModel -Model $model)
+    Assert-HectorViolation -Violations $violations -Pattern 'Required dependency'
+}
+
+Invoke-HectorTestCase 'audio core dependency wrong kind is rejected' {
+    $model = New-HectorTestModel
+    $dependency = @(
+        (Get-HectorTestPackage -Model $model -Name 'hector-audio').DependencyDeclarations
+    )[0]
+    $dependency.Kind = 'dev'
+    $violations = @(Test-HectorArchitectureModel -Model $model)
+    Assert-HectorViolation -Violations $violations -Pattern 'must be a normal workspace dependency'
+}
+
+Invoke-HectorTestCase 'audio core dependency features are rejected' {
+    $model = New-HectorTestModel
+    $dependency = @(
+        (Get-HectorTestPackage -Model $model -Name 'hector-audio').DependencyDeclarations
+    )[0]
+    $dependency.Features = @('unexpected')
+    $violations = @(Test-HectorArchitectureModel -Model $model)
+    Assert-HectorViolation -Violations $violations -Pattern 'must use exactly features'
 }
 
 Invoke-HectorTestCase 'reverse core -> protocol dependency is rejected' {
