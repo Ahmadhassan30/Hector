@@ -64,7 +64,7 @@ function New-HectorTestModel {
             ManifestPath           = [string]$entry.Value.ManifestPath
             Edition                = '2024'
             PublishDisabled        = $true
-            TargetKinds            = @([string]$entry.Value.TargetKind)
+            TargetKinds            = @($entry.Value.TargetKinds | ForEach-Object { [string]$_ })
             DependencyDeclarations = @()
             FeatureNames           = @()
             HasCustomBuild         = $false
@@ -76,7 +76,7 @@ function New-HectorTestModel {
         Packages      = @($packages)
     }
 
-    foreach ($consumer in @('hector-protocol', 'hector-audio')) {
+    foreach ($consumer in @('hector-protocol', 'hector-audio', 'hector-fake-worker')) {
         foreach ($dependency in (Get-HectorExpectedDependencies)[$consumer]) {
             Add-HectorTestDependency `
                 -Model $model `
@@ -136,7 +136,7 @@ function Add-HectorTestDependency {
     )
 }
 
-Invoke-HectorTestCase 'exact H13 and H14 dependency topology passes' {
+Invoke-HectorTestCase 'exact H13 H14 and H15 dependency topology passes' {
     $violations = @(Test-HectorArchitectureModel -Model (New-HectorTestModel))
     Assert-HectorNoViolations -Violations $violations
 }
@@ -148,7 +148,16 @@ $forbiddenInternalEdges = @(
     @('hector', 'hector-runtime'),
     @('hector', 'hector-tui'),
     @('hector-audio', 'hector-protocol'),
-    @('hector-core', 'hector-audio')
+    @('hector-core', 'hector-audio'),
+    @('hector-audio', 'hector-fake-worker'),
+    @('hector-core', 'hector-fake-worker'),
+    @('hector-protocol', 'hector-fake-worker'),
+    @('hector-fake-worker', 'hector-audio'),
+    @('hector-fake-worker', 'hector-runtime'),
+    @('hector-fake-worker', 'hector-platform-windows'),
+    @('hector-fake-worker', 'hector-storage'),
+    @('hector-fake-worker', 'hector-tui'),
+    @('hector-fake-worker', 'hector')
 )
 foreach ($edge in $forbiddenInternalEdges) {
     $consumer = $edge[0]
@@ -163,6 +172,70 @@ foreach ($edge in $forbiddenInternalEdges) {
         $violations = @(Test-HectorArchitectureModel -Model $model)
         Assert-HectorViolation -Violations $violations -Pattern 'Architecture forbids workspace dependency'
     }
+}
+
+foreach ($dependencyName in @(
+    'tokio',
+    'serde',
+    'serde_json',
+    'base64',
+    'tracing',
+    'windows',
+    'cpal',
+    'reqwest'
+)) {
+    Invoke-HectorTestCase "fake worker external dependency $dependencyName is rejected" {
+        $model = New-HectorTestModel
+        Add-HectorTestDependency `
+            -Model $model `
+            -Consumer 'hector-fake-worker' `
+            -Dependency $dependencyName `
+            -IsWorkspace $false
+        $violations = @(Test-HectorArchitectureModel -Model $model)
+        Assert-HectorViolation -Violations $violations -Pattern 'Architecture forbids external dependency'
+    }
+}
+
+foreach ($requiredDependency in @('hector-core', 'hector-protocol')) {
+    Invoke-HectorTestCase "missing required fake worker dependency $requiredDependency is rejected" {
+        $model = New-HectorTestModel
+        $worker = Get-HectorTestPackage -Model $model -Name 'hector-fake-worker'
+        $worker.DependencyDeclarations = @(
+            $worker.DependencyDeclarations |
+                Where-Object Name -CNE $requiredDependency
+        )
+        $violations = @(Test-HectorArchitectureModel -Model $model)
+        Assert-HectorViolation -Violations $violations -Pattern 'Required dependency'
+    }
+}
+
+Invoke-HectorTestCase 'fake worker dependency wrong kind is rejected' {
+    $model = New-HectorTestModel
+    $dependency = @(
+        (Get-HectorTestPackage -Model $model -Name 'hector-fake-worker').DependencyDeclarations |
+            Where-Object Name -CEQ 'hector-protocol'
+    )[0]
+    $dependency.Kind = 'dev'
+    $violations = @(Test-HectorArchitectureModel -Model $model)
+    Assert-HectorViolation -Violations $violations -Pattern 'must be a normal workspace dependency'
+}
+
+Invoke-HectorTestCase 'fake worker dependency features are rejected' {
+    $model = New-HectorTestModel
+    $dependency = @(
+        (Get-HectorTestPackage -Model $model -Name 'hector-fake-worker').DependencyDeclarations |
+            Where-Object Name -CEQ 'hector-core'
+    )[0]
+    $dependency.Features = @('unexpected')
+    $violations = @(Test-HectorArchitectureModel -Model $model)
+    Assert-HectorViolation -Violations $violations -Pattern 'must use exactly features'
+}
+
+Invoke-HectorTestCase 'fake worker must retain exact library and binary targets' {
+    $model = New-HectorTestModel
+    (Get-HectorTestPackage -Model $model -Name 'hector-fake-worker').TargetKinds = @('bin')
+    $violations = @(Test-HectorArchitectureModel -Model $model)
+    Assert-HectorViolation -Violations $violations -Pattern 'must have exactly target kinds'
 }
 
 Invoke-HectorTestCase 'external dependency is rejected' {
@@ -369,7 +442,7 @@ Invoke-HectorTestCase 'incorrect target kind is rejected' {
     $model = New-HectorTestModel
     (Get-HectorTestPackage -Model $model -Name 'hector-core').TargetKinds = @('bin')
     $violations = @(Test-HectorArchitectureModel -Model $model)
-    Assert-HectorViolation -Violations $violations -Pattern 'must have only target kind'
+    Assert-HectorViolation -Violations $violations -Pattern 'must have exactly target kinds'
 }
 
 Invoke-HectorTestCase 'incorrect edition is rejected' {

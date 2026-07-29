@@ -9,6 +9,7 @@ members = [
     "crates/hector-platform-windows",
     "crates/hector-storage",
     "crates/hector-tui",
+    "workers/hector-fake-worker",
 ]
 
 [workspace.lints.rust]

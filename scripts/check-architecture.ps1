@@ -8,35 +8,39 @@ function Get-HectorExpectedPackages {
     $packages = [ordered]@{}
     $packages['hector'] = [pscustomobject]@{
         ManifestPath = 'apps/hector/Cargo.toml'
-        TargetKind   = 'bin'
+        TargetKinds  = @('bin')
     }
     $packages['hector-core'] = [pscustomobject]@{
         ManifestPath = 'crates/hector-core/Cargo.toml'
-        TargetKind   = 'lib'
+        TargetKinds  = @('lib')
     }
     $packages['hector-protocol'] = [pscustomobject]@{
         ManifestPath = 'crates/hector-protocol/Cargo.toml'
-        TargetKind   = 'lib'
+        TargetKinds  = @('lib')
     }
     $packages['hector-audio'] = [pscustomobject]@{
         ManifestPath = 'crates/hector-audio/Cargo.toml'
-        TargetKind   = 'lib'
+        TargetKinds  = @('lib')
     }
     $packages['hector-runtime'] = [pscustomobject]@{
         ManifestPath = 'crates/hector-runtime/Cargo.toml'
-        TargetKind   = 'lib'
+        TargetKinds  = @('lib')
     }
     $packages['hector-platform-windows'] = [pscustomobject]@{
         ManifestPath = 'crates/hector-platform-windows/Cargo.toml'
-        TargetKind   = 'lib'
+        TargetKinds  = @('lib')
     }
     $packages['hector-storage'] = [pscustomobject]@{
         ManifestPath = 'crates/hector-storage/Cargo.toml'
-        TargetKind   = 'lib'
+        TargetKinds  = @('lib')
     }
     $packages['hector-tui'] = [pscustomobject]@{
         ManifestPath = 'crates/hector-tui/Cargo.toml'
-        TargetKind   = 'lib'
+        TargetKinds  = @('lib')
+    }
+    $packages['hector-fake-worker'] = [pscustomobject]@{
+        ManifestPath = 'workers/hector-fake-worker/Cargo.toml'
+        TargetKinds  = @('bin', 'lib')
     }
 
     return $packages
@@ -73,6 +77,20 @@ function Get-HectorExpectedDependencies {
     $dependencies['hector-audio'] = @(
         [pscustomobject]@{
             Name        = 'hector-core'
+            Kind        = 'normal'
+            IsWorkspace = $true
+            Features    = @()
+        }
+    )
+    $dependencies['hector-fake-worker'] = @(
+        [pscustomobject]@{
+            Name        = 'hector-core'
+            Kind        = 'normal'
+            IsWorkspace = $true
+            Features    = @()
+        },
+        [pscustomobject]@{
+            Name        = 'hector-protocol'
             Kind        = 'normal'
             IsWorkspace = $true
             Features    = @()
@@ -491,12 +509,15 @@ function Test-HectorArchitectureModel {
         }
 
         $targetKinds = @($package.TargetKinds | Sort-Object -Unique)
+        $expectedTargetKinds = @($expected.TargetKinds | Sort-Object -Unique)
         if (
-            ($targetKinds.Count -ne 1) -or
-            ($targetKinds[0] -cne $expected.TargetKind)
+            ($targetKinds.Count -ne $expectedTargetKinds.Count) -or
+            (Compare-Object `
+                -ReferenceObject $expectedTargetKinds `
+                -DifferenceObject $targetKinds)
         ) {
             [void]$violations.Add(
-                "Package '$($package.Name)' must have only target kind '$($expected.TargetKind)'."
+                "Package '$($package.Name)' must have exactly target kinds [$($expectedTargetKinds -join ', ')]."
             )
         }
 

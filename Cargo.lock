@@ -24,6 +24,14 @@ name = "hector-core"
 version = "0.1.0"
 
 [[package]]
+name = "hector-fake-worker"
+version = "0.1.0"
+dependencies = [
+ "hector-core",
+ "hector-protocol",
+]
+
+[[package]]
 name = "hector-platform-windows"
 version = "0.1.0"
 

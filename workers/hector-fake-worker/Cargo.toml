@@ -1,0 +1,12 @@
+[package]
+name = "hector-fake-worker"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+hector-core = { path = "../../crates/hector-core" }
+hector-protocol = { path = "../../crates/hector-protocol" }
+
+[lints]
+workspace = true
