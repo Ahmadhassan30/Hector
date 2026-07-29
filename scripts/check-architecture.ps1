@@ -42,6 +42,38 @@ function Get-HectorExpectedPackages {
     return $packages
 }
 
+function Get-HectorExpectedDependencies {
+    $dependencies = [ordered]@{}
+    $dependencies['hector-protocol'] = @(
+        [pscustomobject]@{
+            Name        = 'base64'
+            Kind        = 'normal'
+            IsWorkspace = $false
+            Features    = @()
+        },
+        [pscustomobject]@{
+            Name        = 'hector-core'
+            Kind        = 'normal'
+            IsWorkspace = $true
+            Features    = @()
+        },
+        [pscustomobject]@{
+            Name        = 'serde'
+            Kind        = 'normal'
+            IsWorkspace = $false
+            Features    = @('derive')
+        },
+        [pscustomobject]@{
+            Name        = 'serde_json'
+            Kind        = 'normal'
+            IsWorkspace = $false
+            Features    = @()
+        }
+    )
+
+    return $dependencies
+}
+
 function ConvertTo-HectorNormalizedPath {
     param(
         [Parameter(Mandatory)]
@@ -274,9 +306,11 @@ function ConvertTo-HectorArchitectureModel {
             }
 
             [pscustomobject]@{
-                Name        = [string]$dependency.name
-                Kind        = $kind
-                IsWorkspace = $workspaceNames.Contains([string]$dependency.name)
+                Name                = [string]$dependency.name
+                Kind                = $kind
+                IsWorkspace         = $workspaceNames.Contains([string]$dependency.name)
+                Features            = @($dependency.features | ForEach-Object { [string]$_ })
+                UsesDefaultFeatures = [bool]$dependency.uses_default_features
             }
         }
 
@@ -406,6 +440,7 @@ function Test-HectorArchitectureModel {
 
     $violations = [System.Collections.Generic.List[string]]::new()
     $expectedPackages = Get-HectorExpectedPackages
+    $expectedDependencies = Get-HectorExpectedDependencies
     $actualPackages = @($Model.Packages)
 
     if (-not $Model.IsVirtualRoot) {
@@ -457,11 +492,62 @@ function Test-HectorArchitectureModel {
             )
         }
 
-        foreach ($dependency in @($package.DependencyDeclarations)) {
-            $scope = if ($dependency.IsWorkspace) { 'workspace' } else { 'external' }
-            [void]$violations.Add(
-                "H04 forbids $scope dependency '$($package.Name) -> $($dependency.Name)' ($($dependency.Kind))."
+        $expectedForPackage = if ($expectedDependencies.Contains($package.Name)) {
+            @($expectedDependencies[$package.Name])
+        }
+        else {
+            @()
+        }
+        $actualDependencies = @($package.DependencyDeclarations)
+
+        foreach ($dependency in $actualDependencies) {
+            $matching = @(
+                $expectedForPackage |
+                    Where-Object { $_.Name -ceq $dependency.Name }
             )
+            if ($matching.Count -ne 1) {
+                $scope = if ($dependency.IsWorkspace) { 'workspace' } else { 'external' }
+                [void]$violations.Add(
+                    "Architecture forbids $scope dependency '$($package.Name) -> $($dependency.Name)' ($($dependency.Kind))."
+                )
+                continue
+            }
+
+            $expectedDependency = $matching[0]
+            if (
+                ([string]$dependency.Kind -cne [string]$expectedDependency.Kind) -or
+                ([bool]$dependency.IsWorkspace -ne [bool]$expectedDependency.IsWorkspace)
+            ) {
+                [void]$violations.Add(
+                    "Dependency '$($package.Name) -> $($dependency.Name)' must be a $($expectedDependency.Kind) $(if ($expectedDependency.IsWorkspace) { 'workspace' } else { 'external' }) dependency."
+                )
+            }
+
+            $actualDependencyFeatures = @($dependency.Features | Sort-Object -Unique)
+            $expectedDependencyFeatures = @($expectedDependency.Features | Sort-Object -Unique)
+            if (
+                ($actualDependencyFeatures.Count -ne $expectedDependencyFeatures.Count) -or
+                (Compare-Object `
+                    -ReferenceObject $expectedDependencyFeatures `
+                    -DifferenceObject $actualDependencyFeatures)
+            ) {
+                [void]$violations.Add(
+                    "Dependency '$($package.Name) -> $($dependency.Name)' must use exactly features [$($expectedDependencyFeatures -join ', ')]."
+                )
+            }
+        }
+
+        foreach ($expectedDependency in $expectedForPackage) {
+            if (
+                @(
+                    $actualDependencies |
+                        Where-Object { $_.Name -ceq $expectedDependency.Name }
+                ).Count -ne 1
+            ) {
+                [void]$violations.Add(
+                    "Required dependency '$($package.Name) -> $($expectedDependency.Name)' is missing."
+                )
+            }
         }
         foreach ($featureName in @($package.FeatureNames)) {
             [void]$violations.Add(

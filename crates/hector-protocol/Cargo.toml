@@ -4,5 +4,11 @@ version = "0.1.0"
 edition = "2024"
 publish = false
 
+[dependencies]
+base64 = "0.22"
+hector-core = { path = "../hector-core" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
 [lints]
 workspace = true

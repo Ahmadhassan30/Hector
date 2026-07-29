@@ -71,10 +71,22 @@ function New-HectorTestModel {
         }
     }
 
-    return [pscustomobject]@{
+    $model = [pscustomobject]@{
         IsVirtualRoot = $true
         Packages      = @($packages)
     }
+
+    foreach ($dependency in (Get-HectorExpectedDependencies)['hector-protocol']) {
+        Add-HectorTestDependency `
+            -Model $model `
+            -Consumer 'hector-protocol' `
+            -Dependency $dependency.Name `
+            -IsWorkspace $dependency.IsWorkspace `
+            -Kind $dependency.Kind `
+            -Features $dependency.Features
+    }
+
+    return $model
 }
 
 function Get-HectorTestPackage {
@@ -101,7 +113,11 @@ function Add-HectorTestDependency {
         [string] $Dependency,
 
         [Parameter(Mandatory)]
-        [bool] $IsWorkspace
+        [bool] $IsWorkspace,
+
+        [string] $Kind = 'normal',
+
+        [string[]] $Features = @()
     )
 
     $package = Get-HectorTestPackage -Model $Model -Name $Consumer
@@ -109,14 +125,16 @@ function Add-HectorTestDependency {
         $package.DependencyDeclarations
     ) + @(
         [pscustomobject]@{
-            Name        = $Dependency
-            Kind        = 'normal'
-            IsWorkspace = $IsWorkspace
+            Name                = $Dependency
+            Kind                = $Kind
+            IsWorkspace         = $IsWorkspace
+            Features            = @($Features)
+            UsesDefaultFeatures = $true
         }
     )
 }
 
-Invoke-HectorTestCase 'edgeless H04 workspace passes' {
+Invoke-HectorTestCase 'exact H13 dependency topology passes' {
     $violations = @(Test-HectorArchitectureModel -Model (New-HectorTestModel))
     Assert-HectorNoViolations -Violations $violations
 }
@@ -127,13 +145,12 @@ $forbiddenInternalEdges = @(
     @('hector-runtime', 'hector-audio'),
     @('hector', 'hector-runtime'),
     @('hector', 'hector-tui'),
-    @('hector-protocol', 'hector-core'),
     @('hector-audio', 'hector-core')
 )
 foreach ($edge in $forbiddenInternalEdges) {
     $consumer = $edge[0]
     $dependency = $edge[1]
-    Invoke-HectorTestCase "H04 rejects $consumer -> $dependency" {
+    Invoke-HectorTestCase "architecture rejects $consumer -> $dependency" {
         $model = New-HectorTestModel
         Add-HectorTestDependency `
             -Model $model `
@@ -141,7 +158,7 @@ foreach ($edge in $forbiddenInternalEdges) {
             -Dependency $dependency `
             -IsWorkspace $true
         $violations = @(Test-HectorArchitectureModel -Model $model)
-        Assert-HectorViolation -Violations $violations -Pattern 'H04 forbids workspace dependency'
+        Assert-HectorViolation -Violations $violations -Pattern 'Architecture forbids workspace dependency'
     }
 }
 
@@ -153,7 +170,98 @@ Invoke-HectorTestCase 'external dependency is rejected' {
         -Dependency 'tokio' `
         -IsWorkspace $false
     $violations = @(Test-HectorArchitectureModel -Model $model)
-    Assert-HectorViolation -Violations $violations -Pattern 'H04 forbids external dependency'
+    Assert-HectorViolation -Violations $violations -Pattern 'Architecture forbids external dependency'
+}
+
+Invoke-HectorTestCase 'reverse core -> protocol dependency is rejected' {
+    $model = New-HectorTestModel
+    Add-HectorTestDependency `
+        -Model $model `
+        -Consumer 'hector-core' `
+        -Dependency 'hector-protocol' `
+        -IsWorkspace $true
+    $violations = @(Test-HectorArchitectureModel -Model $model)
+    Assert-HectorViolation -Violations $violations -Pattern 'Architecture forbids workspace dependency'
+}
+
+Invoke-HectorTestCase 'serialization dependency in core is rejected' {
+    $model = New-HectorTestModel
+    Add-HectorTestDependency `
+        -Model $model `
+        -Consumer 'hector-core' `
+        -Dependency 'serde' `
+        -IsWorkspace $false `
+        -Features @('derive')
+    $violations = @(Test-HectorArchitectureModel -Model $model)
+    Assert-HectorViolation -Violations $violations -Pattern 'Architecture forbids external dependency'
+}
+
+Invoke-HectorTestCase 'unrelated internal protocol dependency is rejected' {
+    $model = New-HectorTestModel
+    Add-HectorTestDependency `
+        -Model $model `
+        -Consumer 'hector-protocol' `
+        -Dependency 'hector-audio' `
+        -IsWorkspace $true
+    $violations = @(Test-HectorArchitectureModel -Model $model)
+    Assert-HectorViolation -Violations $violations -Pattern 'Architecture forbids workspace dependency'
+}
+
+Invoke-HectorTestCase 'unrelated external protocol dependency is rejected' {
+    $model = New-HectorTestModel
+    Add-HectorTestDependency `
+        -Model $model `
+        -Consumer 'hector-protocol' `
+        -Dependency 'bincode' `
+        -IsWorkspace $false
+    $violations = @(Test-HectorArchitectureModel -Model $model)
+    Assert-HectorViolation -Violations $violations -Pattern 'Architecture forbids external dependency'
+}
+
+foreach ($requiredDependency in @('base64', 'hector-core', 'serde', 'serde_json')) {
+    Invoke-HectorTestCase "missing required protocol dependency $requiredDependency is rejected" {
+        $model = New-HectorTestModel
+        $protocol = Get-HectorTestPackage -Model $model -Name 'hector-protocol'
+        $protocol.DependencyDeclarations = @(
+            $protocol.DependencyDeclarations |
+                Where-Object Name -CNE $requiredDependency
+        )
+        $violations = @(Test-HectorArchitectureModel -Model $model)
+        Assert-HectorViolation -Violations $violations -Pattern 'Required dependency'
+    }
+}
+
+Invoke-HectorTestCase 'wrong dependency kind is rejected' {
+    $model = New-HectorTestModel
+    $dependency = @(
+        (Get-HectorTestPackage -Model $model -Name 'hector-protocol').DependencyDeclarations |
+            Where-Object Name -CEQ 'serde_json'
+    )[0]
+    $dependency.Kind = 'dev'
+    $violations = @(Test-HectorArchitectureModel -Model $model)
+    Assert-HectorViolation -Violations $violations -Pattern 'must be a normal external dependency'
+}
+
+Invoke-HectorTestCase 'missing serde derive feature is rejected' {
+    $model = New-HectorTestModel
+    $dependency = @(
+        (Get-HectorTestPackage -Model $model -Name 'hector-protocol').DependencyDeclarations |
+            Where-Object Name -CEQ 'serde'
+    )[0]
+    $dependency.Features = @()
+    $violations = @(Test-HectorArchitectureModel -Model $model)
+    Assert-HectorViolation -Violations $violations -Pattern 'must use exactly features'
+}
+
+Invoke-HectorTestCase 'unauthorized dependency feature is rejected' {
+    $model = New-HectorTestModel
+    $dependency = @(
+        (Get-HectorTestPackage -Model $model -Name 'hector-protocol').DependencyDeclarations |
+            Where-Object Name -CEQ 'serde_json'
+    )[0]
+    $dependency.Features = @('preserve_order')
+    $violations = @(Test-HectorArchitectureModel -Model $model)
+    Assert-HectorViolation -Violations $violations -Pattern 'must use exactly features'
 }
 
 Invoke-HectorTestCase 'unknown package is rejected' {
