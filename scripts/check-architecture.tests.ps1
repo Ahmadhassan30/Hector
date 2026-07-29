@@ -76,7 +76,12 @@ function New-HectorTestModel {
         Packages      = @($packages)
     }
 
-    foreach ($consumer in @('hector-protocol', 'hector-audio', 'hector-fake-worker')) {
+    foreach ($consumer in @(
+        'hector-protocol',
+        'hector-audio',
+        'hector-fake-worker',
+        'hector-platform-windows'
+    )) {
         foreach ($dependency in (Get-HectorExpectedDependencies)[$consumer]) {
             Add-HectorTestDependency `
                 -Model $model `
@@ -84,7 +89,9 @@ function New-HectorTestModel {
                 -Dependency $dependency.Name `
                 -IsWorkspace $dependency.IsWorkspace `
                 -Kind $dependency.Kind `
-                -Features $dependency.Features
+                -Features $dependency.Features `
+                -Target $dependency.Target `
+                -Requirement $dependency.Requirement
         }
     }
 
@@ -119,7 +126,11 @@ function Add-HectorTestDependency {
 
         [string] $Kind = 'normal',
 
-        [string[]] $Features = @()
+        [string[]] $Features = @(),
+
+        [string] $Target = '',
+
+        [string] $Requirement = ''
     )
 
     $package = Get-HectorTestPackage -Model $Model -Name $Consumer
@@ -132,11 +143,13 @@ function Add-HectorTestDependency {
             IsWorkspace         = $IsWorkspace
             Features            = @($Features)
             UsesDefaultFeatures = $true
+            Target              = $Target
+            Requirement         = $Requirement
         }
     )
 }
 
-Invoke-HectorTestCase 'exact H13 H14 and H15 dependency topology passes' {
+Invoke-HectorTestCase 'exact H13 through H16 dependency topology passes' {
     $violations = @(Test-HectorArchitectureModel -Model (New-HectorTestModel))
     Assert-HectorNoViolations -Violations $violations
 }
@@ -154,7 +167,6 @@ $forbiddenInternalEdges = @(
     @('hector-protocol', 'hector-fake-worker'),
     @('hector-fake-worker', 'hector-audio'),
     @('hector-fake-worker', 'hector-runtime'),
-    @('hector-fake-worker', 'hector-platform-windows'),
     @('hector-fake-worker', 'hector-storage'),
     @('hector-fake-worker', 'hector-tui'),
     @('hector-fake-worker', 'hector')
@@ -168,6 +180,128 @@ foreach ($edge in $forbiddenInternalEdges) {
             -Model $model `
             -Consumer $consumer `
             -Dependency $dependency `
+            -IsWorkspace $true
+        $violations = @(Test-HectorArchitectureModel -Model $model)
+        Assert-HectorViolation -Violations $violations -Pattern 'Architecture forbids workspace dependency'
+    }
+}
+
+Invoke-HectorTestCase 'fake worker production dependency on platform is rejected' {
+    $model = New-HectorTestModel
+    $dependency = @(
+        (Get-HectorTestPackage -Model $model -Name 'hector-fake-worker').DependencyDeclarations |
+            Where-Object Name -CEQ 'hector-platform-windows'
+    )[0]
+    $dependency.Kind = 'normal'
+    $dependency.Target = ''
+    $violations = @(Test-HectorArchitectureModel -Model $model)
+    Assert-HectorViolation -Violations $violations -Pattern 'must be a dev workspace dependency'
+}
+
+Invoke-HectorTestCase 'fake worker platform dependency requires cfg windows' {
+    $model = New-HectorTestModel
+    $dependency = @(
+        (Get-HectorTestPackage -Model $model -Name 'hector-fake-worker').DependencyDeclarations |
+            Where-Object Name -CEQ 'hector-platform-windows'
+    )[0]
+    $dependency.Target = ''
+    $violations = @(Test-HectorArchitectureModel -Model $model)
+    Assert-HectorViolation -Violations $violations -Pattern "target 'cfg\(windows\)'"
+}
+
+Invoke-HectorTestCase 'fake worker platform dependency features are rejected' {
+    $model = New-HectorTestModel
+    $dependency = @(
+        (Get-HectorTestPackage -Model $model -Name 'hector-fake-worker').DependencyDeclarations |
+            Where-Object Name -CEQ 'hector-platform-windows'
+    )[0]
+    $dependency.Features = @('unexpected')
+    $violations = @(Test-HectorArchitectureModel -Model $model)
+    Assert-HectorViolation -Violations $violations -Pattern 'must use exactly features'
+}
+
+foreach ($requiredDependency in @('hector-protocol', 'windows-sys')) {
+    Invoke-HectorTestCase "missing required platform dependency $requiredDependency is rejected" {
+        $model = New-HectorTestModel
+        $platform = Get-HectorTestPackage -Model $model -Name 'hector-platform-windows'
+        $platform.DependencyDeclarations = @(
+            $platform.DependencyDeclarations |
+                Where-Object Name -CNE $requiredDependency
+        )
+        $violations = @(Test-HectorArchitectureModel -Model $model)
+        Assert-HectorViolation -Violations $violations -Pattern 'Required dependency'
+    }
+}
+
+Invoke-HectorTestCase 'windows sys version requirement is exact' {
+    $model = New-HectorTestModel
+    $dependency = @(
+        (Get-HectorTestPackage -Model $model -Name 'hector-platform-windows').DependencyDeclarations |
+            Where-Object Name -CEQ 'windows-sys'
+    )[0]
+    $dependency.Requirement = '^0.62.0'
+    $violations = @(Test-HectorArchitectureModel -Model $model)
+    Assert-HectorViolation -Violations $violations -Pattern "version requirement '\^0\.61\.2'"
+}
+
+Invoke-HectorTestCase 'windows sys target condition is exact' {
+    $model = New-HectorTestModel
+    $dependency = @(
+        (Get-HectorTestPackage -Model $model -Name 'hector-platform-windows').DependencyDeclarations |
+            Where-Object Name -CEQ 'windows-sys'
+    )[0]
+    $dependency.Target = ''
+    $violations = @(Test-HectorArchitectureModel -Model $model)
+    Assert-HectorViolation -Violations $violations -Pattern "target 'cfg\(windows\)'"
+}
+
+Invoke-HectorTestCase 'windows sys feature set is exact' {
+    $model = New-HectorTestModel
+    $dependency = @(
+        (Get-HectorTestPackage -Model $model -Name 'hector-platform-windows').DependencyDeclarations |
+            Where-Object Name -CEQ 'windows-sys'
+    )[0]
+    $dependency.Features = @($dependency.Features) + @('Win32_UI_WindowsAndMessaging')
+    $violations = @(Test-HectorArchitectureModel -Model $model)
+    Assert-HectorViolation -Violations $violations -Pattern 'must use exactly features'
+}
+
+foreach ($dependencyName in @(
+    'tokio',
+    'tracing',
+    'serde',
+    'cpal',
+    'windows',
+    'jobserver',
+    'process-wrap'
+)) {
+    Invoke-HectorTestCase "platform external dependency $dependencyName is rejected" {
+        $model = New-HectorTestModel
+        Add-HectorTestDependency `
+            -Model $model `
+            -Consumer 'hector-platform-windows' `
+            -Dependency $dependencyName `
+            -IsWorkspace $false
+        $violations = @(Test-HectorArchitectureModel -Model $model)
+        Assert-HectorViolation -Violations $violations -Pattern 'Architecture forbids external dependency'
+    }
+}
+
+foreach ($dependencyName in @(
+    'hector-core',
+    'hector-audio',
+    'hector-runtime',
+    'hector-storage',
+    'hector-tui',
+    'hector',
+    'hector-fake-worker'
+)) {
+    Invoke-HectorTestCase "platform dependency on $dependencyName is rejected" {
+        $model = New-HectorTestModel
+        Add-HectorTestDependency `
+            -Model $model `
+            -Consumer 'hector-platform-windows' `
+            -Dependency $dependencyName `
             -IsWorkspace $true
         $violations = @(Test-HectorArchitectureModel -Model $model)
         Assert-HectorViolation -Violations $violations -Pattern 'Architecture forbids workspace dependency'
@@ -196,7 +330,11 @@ foreach ($dependencyName in @(
     }
 }
 
-foreach ($requiredDependency in @('hector-core', 'hector-protocol')) {
+foreach ($requiredDependency in @(
+    'hector-core',
+    'hector-protocol',
+    'hector-platform-windows'
+)) {
     Invoke-HectorTestCase "missing required fake worker dependency $requiredDependency is rejected" {
         $model = New-HectorTestModel
         $worker = Get-HectorTestPackage -Model $model -Name 'hector-fake-worker'
@@ -233,7 +371,7 @@ Invoke-HectorTestCase 'fake worker dependency features are rejected' {
 
 Invoke-HectorTestCase 'fake worker must retain exact library and binary targets' {
     $model = New-HectorTestModel
-    (Get-HectorTestPackage -Model $model -Name 'hector-fake-worker').TargetKinds = @('bin')
+    (Get-HectorTestPackage -Model $model -Name 'hector-fake-worker').TargetKinds = @('bin', 'lib')
     $violations = @(Test-HectorArchitectureModel -Model $model)
     Assert-HectorViolation -Violations $violations -Pattern 'must have exactly target kinds'
 }

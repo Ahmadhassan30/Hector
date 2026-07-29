@@ -8,5 +8,8 @@ publish = false
 hector-core = { path = "../../crates/hector-core" }
 hector-protocol = { path = "../../crates/hector-protocol" }
 
+[target.'cfg(windows)'.dev-dependencies]
+hector-platform-windows = { path = "../../crates/hector-platform-windows" }
+
 [lints]
 workspace = true

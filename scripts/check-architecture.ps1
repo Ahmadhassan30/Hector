@@ -40,7 +40,7 @@ function Get-HectorExpectedPackages {
     }
     $packages['hector-fake-worker'] = [pscustomobject]@{
         ManifestPath = 'workers/hector-fake-worker/Cargo.toml'
-        TargetKinds  = @('bin', 'lib')
+        TargetKinds  = @('bin', 'lib', 'test')
     }
 
     return $packages
@@ -54,24 +54,32 @@ function Get-HectorExpectedDependencies {
             Kind        = 'normal'
             IsWorkspace = $false
             Features    = @()
+            Target      = ''
+            Requirement = ''
         },
         [pscustomobject]@{
             Name        = 'hector-core'
             Kind        = 'normal'
             IsWorkspace = $true
             Features    = @()
+            Target      = ''
+            Requirement = ''
         },
         [pscustomobject]@{
             Name        = 'serde'
             Kind        = 'normal'
             IsWorkspace = $false
             Features    = @('derive')
+            Target      = ''
+            Requirement = ''
         },
         [pscustomobject]@{
             Name        = 'serde_json'
             Kind        = 'normal'
             IsWorkspace = $false
             Features    = @()
+            Target      = ''
+            Requirement = ''
         }
     )
     $dependencies['hector-audio'] = @(
@@ -80,6 +88,8 @@ function Get-HectorExpectedDependencies {
             Kind        = 'normal'
             IsWorkspace = $true
             Features    = @()
+            Target      = ''
+            Requirement = ''
         }
     )
     $dependencies['hector-fake-worker'] = @(
@@ -88,12 +98,50 @@ function Get-HectorExpectedDependencies {
             Kind        = 'normal'
             IsWorkspace = $true
             Features    = @()
+            Target      = ''
+            Requirement = ''
         },
         [pscustomobject]@{
             Name        = 'hector-protocol'
             Kind        = 'normal'
             IsWorkspace = $true
             Features    = @()
+            Target      = ''
+            Requirement = ''
+        },
+        [pscustomobject]@{
+            Name        = 'hector-platform-windows'
+            Kind        = 'dev'
+            IsWorkspace = $true
+            Features    = @()
+            Target      = 'cfg(windows)'
+            Requirement = ''
+        }
+    )
+    $dependencies['hector-platform-windows'] = @(
+        [pscustomobject]@{
+            Name        = 'hector-protocol'
+            Kind        = 'normal'
+            IsWorkspace = $true
+            Features    = @()
+            Target      = ''
+            Requirement = ''
+        },
+        [pscustomobject]@{
+            Name        = 'windows-sys'
+            Kind        = 'normal'
+            IsWorkspace = $false
+            Features    = @(
+                'Win32_Foundation',
+                'Win32_Security',
+                'Win32_Storage_FileSystem',
+                'Win32_System_IO',
+                'Win32_System_JobObjects',
+                'Win32_System_Pipes',
+                'Win32_System_Threading'
+            )
+            Target      = 'cfg(windows)'
+            Requirement = '^0.61.2'
         }
     )
 
@@ -337,6 +385,13 @@ function ConvertTo-HectorArchitectureModel {
                 IsWorkspace         = $workspaceNames.Contains([string]$dependency.name)
                 Features            = @($dependency.features | ForEach-Object { [string]$_ })
                 UsesDefaultFeatures = [bool]$dependency.uses_default_features
+                Target              = if ($null -eq $dependency.target) {
+                    ''
+                }
+                else {
+                    [string]$dependency.target
+                }
+                Requirement         = [string]$dependency.req
             }
         }
 
@@ -545,10 +600,19 @@ function Test-HectorArchitectureModel {
             $expectedDependency = $matching[0]
             if (
                 ([string]$dependency.Kind -cne [string]$expectedDependency.Kind) -or
-                ([bool]$dependency.IsWorkspace -ne [bool]$expectedDependency.IsWorkspace)
+                ([bool]$dependency.IsWorkspace -ne [bool]$expectedDependency.IsWorkspace) -or
+                ([string]$dependency.Target -cne [string]$expectedDependency.Target)
             ) {
                 [void]$violations.Add(
-                    "Dependency '$($package.Name) -> $($dependency.Name)' must be a $($expectedDependency.Kind) $(if ($expectedDependency.IsWorkspace) { 'workspace' } else { 'external' }) dependency."
+                    "Dependency '$($package.Name) -> $($dependency.Name)' must be a $($expectedDependency.Kind) $(if ($expectedDependency.IsWorkspace) { 'workspace' } else { 'external' }) dependency for target '$($expectedDependency.Target)'."
+                )
+            }
+            if (
+                ([string]$expectedDependency.Requirement).Length -gt 0 -and
+                ([string]$dependency.Requirement -cne [string]$expectedDependency.Requirement)
+            ) {
+                [void]$violations.Add(
+                    "Dependency '$($package.Name) -> $($dependency.Name)' must use version requirement '$($expectedDependency.Requirement)'."
                 )
             }
 
