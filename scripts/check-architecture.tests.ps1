@@ -83,6 +83,14 @@ function New-HectorTestModel {
         'hector-platform-windows'
     )) {
         foreach ($dependency in (Get-HectorExpectedDependencies)[$consumer]) {
+            $usesDefaultFeatures = if (
+                $null -ne $dependency.PSObject.Properties['UsesDefaultFeatures']
+            ) {
+                [bool]$dependency.UsesDefaultFeatures
+            }
+            else {
+                $true
+            }
             Add-HectorTestDependency `
                 -Model $model `
                 -Consumer $consumer `
@@ -91,7 +99,8 @@ function New-HectorTestModel {
                 -Kind $dependency.Kind `
                 -Features $dependency.Features `
                 -Target $dependency.Target `
-                -Requirement $dependency.Requirement
+                -Requirement $dependency.Requirement `
+                -UsesDefaultFeatures $usesDefaultFeatures
         }
     }
 
@@ -130,7 +139,9 @@ function Add-HectorTestDependency {
 
         [string] $Target = '',
 
-        [string] $Requirement = ''
+        [string] $Requirement = '',
+
+        [bool] $UsesDefaultFeatures = $true
     )
 
     $package = Get-HectorTestPackage -Model $Model -Name $Consumer
@@ -142,14 +153,14 @@ function Add-HectorTestDependency {
             Kind                = $Kind
             IsWorkspace         = $IsWorkspace
             Features            = @($Features)
-            UsesDefaultFeatures = $true
+            UsesDefaultFeatures = $UsesDefaultFeatures
             Target              = $Target
             Requirement         = $Requirement
         }
     )
 }
 
-Invoke-HectorTestCase 'exact H13 through H16 dependency topology passes' {
+Invoke-HectorTestCase 'exact H13 through H20 dependency topology passes' {
     $violations = @(Test-HectorArchitectureModel -Model (New-HectorTestModel))
     Assert-HectorNoViolations -Violations $violations
 }
@@ -389,11 +400,13 @@ Invoke-HectorTestCase 'external dependency is rejected' {
 
 foreach ($dependencyName in @(
     'tokio',
-    'cpal',
     'serde',
     'base64',
     'tracing',
     'windows',
+    'windows-sys',
+    'asio-sys',
+    'jack',
     'symphonia',
     'rubato'
 )) {
@@ -412,7 +425,10 @@ foreach ($dependencyName in @(
 Invoke-HectorTestCase 'missing required audio core dependency is rejected' {
     $model = New-HectorTestModel
     $audio = Get-HectorTestPackage -Model $model -Name 'hector-audio'
-    $audio.DependencyDeclarations = @()
+    $audio.DependencyDeclarations = @(
+        $audio.DependencyDeclarations |
+            Where-Object Name -CNE 'hector-core'
+    )
     $violations = @(Test-HectorArchitectureModel -Model $model)
     Assert-HectorViolation -Violations $violations -Pattern 'Required dependency'
 }
@@ -420,7 +436,8 @@ Invoke-HectorTestCase 'missing required audio core dependency is rejected' {
 Invoke-HectorTestCase 'audio core dependency wrong kind is rejected' {
     $model = New-HectorTestModel
     $dependency = @(
-        (Get-HectorTestPackage -Model $model -Name 'hector-audio').DependencyDeclarations
+        (Get-HectorTestPackage -Model $model -Name 'hector-audio').DependencyDeclarations |
+            Where-Object Name -CEQ 'hector-core'
     )[0]
     $dependency.Kind = 'dev'
     $violations = @(Test-HectorArchitectureModel -Model $model)
@@ -430,11 +447,80 @@ Invoke-HectorTestCase 'audio core dependency wrong kind is rejected' {
 Invoke-HectorTestCase 'audio core dependency features are rejected' {
     $model = New-HectorTestModel
     $dependency = @(
-        (Get-HectorTestPackage -Model $model -Name 'hector-audio').DependencyDeclarations
+        (Get-HectorTestPackage -Model $model -Name 'hector-audio').DependencyDeclarations |
+            Where-Object Name -CEQ 'hector-core'
     )[0]
     $dependency.Features = @('unexpected')
     $violations = @(Test-HectorArchitectureModel -Model $model)
     Assert-HectorViolation -Violations $violations -Pattern 'must use exactly features'
+}
+
+Invoke-HectorTestCase 'missing required Windows CPAL dependency is rejected' {
+    $model = New-HectorTestModel
+    $audio = Get-HectorTestPackage -Model $model -Name 'hector-audio'
+    $audio.DependencyDeclarations = @(
+        $audio.DependencyDeclarations |
+            Where-Object Name -CNE 'cpal'
+    )
+    $violations = @(Test-HectorArchitectureModel -Model $model)
+    Assert-HectorViolation -Violations $violations -Pattern 'Required dependency'
+}
+
+foreach ($wrongKind in @('dev', 'build')) {
+    Invoke-HectorTestCase "CPAL dependency kind $wrongKind is rejected" {
+        $model = New-HectorTestModel
+        $dependency = @(
+            (Get-HectorTestPackage -Model $model -Name 'hector-audio').DependencyDeclarations |
+                Where-Object Name -CEQ 'cpal'
+        )[0]
+        $dependency.Kind = $wrongKind
+        $violations = @(Test-HectorArchitectureModel -Model $model)
+        Assert-HectorViolation -Violations $violations -Pattern "must be a normal external dependency for target 'cfg\(windows\)'"
+    }
+}
+
+Invoke-HectorTestCase 'CPAL version requirement is pinned exactly' {
+    $model = New-HectorTestModel
+    $dependency = @(
+        (Get-HectorTestPackage -Model $model -Name 'hector-audio').DependencyDeclarations |
+            Where-Object Name -CEQ 'cpal'
+    )[0]
+    $dependency.Requirement = '^0.18.1'
+    $violations = @(Test-HectorArchitectureModel -Model $model)
+    Assert-HectorViolation -Violations $violations -Pattern "version requirement '=0\.18\.1'"
+}
+
+Invoke-HectorTestCase 'CPAL target condition is exact' {
+    $model = New-HectorTestModel
+    $dependency = @(
+        (Get-HectorTestPackage -Model $model -Name 'hector-audio').DependencyDeclarations |
+            Where-Object Name -CEQ 'cpal'
+    )[0]
+    $dependency.Target = ''
+    $violations = @(Test-HectorArchitectureModel -Model $model)
+    Assert-HectorViolation -Violations $violations -Pattern "target 'cfg\(windows\)'"
+}
+
+Invoke-HectorTestCase 'CPAL optional features are rejected' {
+    $model = New-HectorTestModel
+    $dependency = @(
+        (Get-HectorTestPackage -Model $model -Name 'hector-audio').DependencyDeclarations |
+            Where-Object Name -CEQ 'cpal'
+    )[0]
+    $dependency.Features = @('asio')
+    $violations = @(Test-HectorArchitectureModel -Model $model)
+    Assert-HectorViolation -Violations $violations -Pattern 'must use exactly features'
+}
+
+Invoke-HectorTestCase 'CPAL default features must remain disabled' {
+    $model = New-HectorTestModel
+    $dependency = @(
+        (Get-HectorTestPackage -Model $model -Name 'hector-audio').DependencyDeclarations |
+            Where-Object Name -CEQ 'cpal'
+    )[0]
+    $dependency.UsesDefaultFeatures = $true
+    $violations = @(Test-HectorArchitectureModel -Model $model)
+    Assert-HectorViolation -Violations $violations -Pattern "uses_default_features to 'False'"
 }
 
 Invoke-HectorTestCase 'reverse core -> protocol dependency is rejected' {

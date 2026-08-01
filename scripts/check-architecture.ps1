@@ -90,6 +90,15 @@ function Get-HectorExpectedDependencies {
             Features    = @()
             Target      = ''
             Requirement = ''
+        },
+        [pscustomobject]@{
+            Name                = 'cpal'
+            Kind                = 'normal'
+            IsWorkspace         = $false
+            Features            = @()
+            UsesDefaultFeatures = $false
+            Target              = 'cfg(windows)'
+            Requirement         = '=0.18.1'
         }
     )
     $dependencies['hector-fake-worker'] = @(
@@ -598,6 +607,14 @@ function Test-HectorArchitectureModel {
             }
 
             $expectedDependency = $matching[0]
+            $expectedUsesDefaultFeatures = if (
+                $null -ne $expectedDependency.PSObject.Properties['UsesDefaultFeatures']
+            ) {
+                [bool]$expectedDependency.UsesDefaultFeatures
+            }
+            else {
+                $true
+            }
             if (
                 ([string]$dependency.Kind -cne [string]$expectedDependency.Kind) -or
                 ([bool]$dependency.IsWorkspace -ne [bool]$expectedDependency.IsWorkspace) -or
@@ -626,6 +643,11 @@ function Test-HectorArchitectureModel {
             ) {
                 [void]$violations.Add(
                     "Dependency '$($package.Name) -> $($dependency.Name)' must use exactly features [$($expectedDependencyFeatures -join ', ')]."
+                )
+            }
+            if ([bool]$dependency.UsesDefaultFeatures -ne $expectedUsesDefaultFeatures) {
+                [void]$violations.Add(
+                    "Dependency '$($package.Name) -> $($dependency.Name)' must set uses_default_features to '$expectedUsesDefaultFeatures'."
                 )
             }
         }

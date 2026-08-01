@@ -25,6 +25,130 @@ impl fmt::Display for AudioBufferError {
 
 impl std::error::Error for AudioBufferError {}
 
+/// Failure to accept a WASAPI backend identifier.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum AudioDeviceIdError {
+    Empty,
+    TooLong,
+    WrongHost,
+    MissingBackendIdentifier,
+    ControlCharacter,
+}
+
+/// Failure to construct an audio format capability.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum AudioFormatError {
+    ZeroChannels,
+    ZeroSampleRate,
+    InvertedSampleRateRange,
+    ZeroBufferFrames,
+    InvertedBufferRange,
+}
+
+/// Failure to construct a deterministic format-selection policy.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum AudioSelectionPolicyError {
+    EmptySampleFormats,
+    TooManyPreferences,
+    ZeroSampleRate,
+    ZeroChannelCount,
+    DuplicateSampleRate,
+    DuplicateSampleFormat,
+    DuplicateChannelCount,
+    UnsupportedSampleFormat,
+}
+
+/// Audio-backend operation that failed while building an inventory snapshot.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum AudioDiscoveryOperation {
+    OpenWasapiHost,
+    EnumerateDevices,
+    ReadDeviceId,
+    ReadDescription,
+    ReadInputFormats,
+    ReadOutputFormats,
+    ReadDefaultInput,
+    ReadDefaultOutput,
+}
+
+/// Stable classification of a CPAL/backend failure.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum AudioBackendFailureKind {
+    DeviceBusy,
+    DeviceChanged,
+    DeviceNotAvailable,
+    HostUnavailable,
+    InvalidInput,
+    PermissionDenied,
+    RealtimeDenied,
+    ResourceExhausted,
+    StreamInvalidated,
+    UnsupportedConfig,
+    UnsupportedOperation,
+    Xrun,
+    BackendError,
+    Other,
+    UnknownFuture,
+}
+
+/// Bounded inventory resource.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum AudioDiscoveryLimit {
+    EndpointCount,
+    InputFormatCount,
+    OutputFormatCount,
+    DeviceIdBytes,
+    DeviceNameBytes,
+}
+
+/// Failure to build a complete, internally consistent endpoint snapshot.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum AudioDiscoveryError {
+    UnsupportedPlatform,
+    Backend {
+        operation: AudioDiscoveryOperation,
+        kind: AudioBackendFailureKind,
+    },
+    LimitExceeded {
+        limit: AudioDiscoveryLimit,
+        maximum: usize,
+    },
+    InvalidDeviceId(AudioDeviceIdError),
+    InvalidFormat(AudioFormatError),
+    DuplicateDeviceId,
+    DirectionlessEndpoint,
+}
+
+/// Failure to select an explicit endpoint or compatible format.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum AudioSelectionError {
+    DeviceNotFound,
+    DirectionUnavailable,
+    NoSupportedFormat,
+}
+
+macro_rules! debug_display_and_error {
+    ($($type:ty),+ $(,)?) => {
+        $(
+            impl fmt::Display for $type {
+                fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                    write!(formatter, "{self:?}")
+                }
+            }
+
+            impl std::error::Error for $type {}
+        )+
+    };
+}
+
+debug_display_and_error!(
+    AudioDeviceIdError,
+    AudioFormatError,
+    AudioSelectionPolicyError,
+    AudioDiscoveryError,
+    AudioSelectionError,
+);
+
 /// Normal result of attempting to push into a full audio queue.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum PushError {
@@ -55,7 +179,11 @@ pub enum PopError {
 
 #[cfg(test)]
 mod tests {
-    use super::{AudioBufferError, PopError, PushError};
+    use super::{
+        AudioBackendFailureKind, AudioBufferError, AudioDeviceIdError, AudioDiscoveryError,
+        AudioDiscoveryOperation, AudioFormatError, AudioSelectionError, AudioSelectionPolicyError,
+        PopError, PushError,
+    };
     use std::error::Error;
 
     #[test]
@@ -88,5 +216,24 @@ mod tests {
         assert_eq!(full.sample(), -123);
         assert_eq!(full.into_sample(), -123);
         assert_eq!(PopError::Empty, PopError::Empty);
+    }
+
+    #[test]
+    fn h20_errors_are_deterministic_and_source_free() {
+        let errors: Vec<Box<dyn Error>> = vec![
+            Box::new(AudioDeviceIdError::WrongHost),
+            Box::new(AudioFormatError::ZeroChannels),
+            Box::new(AudioSelectionPolicyError::DuplicateSampleRate),
+            Box::new(AudioDiscoveryError::Backend {
+                operation: AudioDiscoveryOperation::EnumerateDevices,
+                kind: AudioBackendFailureKind::HostUnavailable,
+            }),
+            Box::new(AudioSelectionError::NoSupportedFormat),
+        ];
+
+        for error in errors {
+            assert!(!error.to_string().is_empty());
+            assert!(error.source().is_none());
+        }
     }
 }
